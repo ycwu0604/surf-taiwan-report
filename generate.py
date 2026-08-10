@@ -515,7 +515,7 @@ def render_html(now, today_label, ranking, all_spots_data) -> str:
             for t in day["tide"]:
                 tc = "tide-high" if t["type"] == "滿潮" else "tide-low"
                 arrow = "▲" if t["type"] == "滿潮" else "▼"
-                tide_html += f'<span class="tide-item {tc}">{arrow} {escape(t["type"])} {escape(t["time"])} ({t["height"]}cm)</span>'
+                tide_html += f'<span class="tide-item {tc}">{arrow} {escape(t["type"])} {escape(t["time"])}<small class="tide-h">{t["height"]}cm</small></span>'
 
             # Detail rows (3-hourly)
             detail_rows = ""
@@ -530,7 +530,7 @@ def render_html(now, today_label, ranking, all_spots_data) -> str:
                   <td class="d-wh-cell"><div class="wh-mini {wh_class}"></div><span class="d-wh-num">{dr['wave_height']}m</span></td>
                   <td class="d-wp">{dr['wave_period']}s</td>
                   <td class="d-dir">{escape(dr['wave_dir'])}</td>
-                  <td class="d-ws">{ws_str} {escape(dr['wind_dir'])}</td>
+                  <td class="d-ws"><span class="d-ws-num">{ws_str}</span> <span class="d-ws-dir">{escape(dr['wind_dir'])}</span></td>
                 </tr>"""
 
             # Compact tide info in header
@@ -651,9 +651,10 @@ a {{ color:var(--accent); }}
 .rating-warn {{ color:#ff9800; }}
 
 /* Tide */
-.tide-strip {{ display:flex; gap:8px; flex-wrap:wrap; margin:6px 0 8px; font-size:.8rem; }}
+.tide-strip {{ display:flex; gap:4px; flex-wrap:wrap; margin:6px 0 8px; font-size:.76rem; }}
 .tide-compact {{ color:var(--tide-hi); font-size:.78rem; white-space:nowrap; }}
-.tide-item {{ padding:2px 8px; border-radius:10px; }}
+.tide-item {{ padding:2px 6px; border-radius:10px; white-space:nowrap; }}
+.tide-h {{ font-size:.62rem; opacity:.7; margin-left:2px; }}
 .tide-high {{ background:rgba(38,166,154,.15); color:var(--tide-hi); }}
 .tide-low {{ background:rgba(77,208,225,.12); color:var(--tide-lo); }}
 
@@ -661,26 +662,32 @@ a {{ color:var(--accent); }}
 .detail-table {{ width:100%; border-collapse:collapse; font-size:.78rem; }}
 .detail-table th {{ color:var(--dim); text-align:left; padding:4px 6px; font-weight:400; border-bottom:1px solid rgba(255,255,255,.08); }}
 .detail-table td {{ padding:4px 6px; border-bottom:1px solid rgba(255,255,255,.04); }}
-.d-time {{ color:var(--dim); font-variant-numeric:tabular-nums; min-width:44px; }}
-.d-wh-cell {{ display:flex; align-items:center; gap:4px; min-width:52px; }}
-.wh-mini {{ width:3px; height:16px; border-radius:2px; flex-shrink:0; }}
+.d-time {{ color:var(--dim); font-variant-numeric:tabular-nums; min-width:38px; }}
+.d-wh-cell {{ display:flex; align-items:center; gap:2px; min-width:42px; }}
+.wh-mini {{ width:3px; height:14px; border-radius:2px; flex-shrink:0; }}
 .wh-mini.wh-c1 {{ background:linear-gradient(180deg,var(--wave1),var(--wave2)); }}
 .wh-mini.wh-c2 {{ background:linear-gradient(180deg,var(--wave2),var(--wave3)); }}
 .wh-mini.wh-c3 {{ background:linear-gradient(180deg,var(--wave3),var(--wave4)); }}
 .wh-mini.wh-c4 {{ background:linear-gradient(180deg,#ff4081,#d50000); }}
 .wh-mini.wh-c0 {{ background:rgba(255,255,255,.15); }}
-.d-wh-num {{ font-weight:800; font-size:.92rem; font-variant-numeric:tabular-nums; color:#fff; text-shadow:0 0 6px rgba(0,0,0,.6); }}
+.d-wh-num {{ font-weight:800; font-size:.82rem; font-variant-numeric:tabular-nums; color:#fff; text-shadow:0 0 6px rgba(0,0,0,.6); }}
 
-.d-wp {{ font-variant-numeric:tabular-nums; min-width:36px; }}
-.d-dir {{ min-width:36px; }}
-.d-ws {{ min-width:60px; }}
+.d-wp {{ font-variant-numeric:tabular-nums; min-width:30px; }}
+.d-dir {{ min-width:28px; }}
+.d-ws {{ min-width:52px; }}
 
 /* Responsive */
 @media(max-width:600px) {{
   .rank-table {{ font-size:.72rem; }}
   .rank-table th, .rank-table td {{ padding:5px 4px; }}
-  .detail-table {{ font-size:.72rem; }}
-  .d-ws {{ display:none; }}
+  .detail-table {{ font-size:.68rem; }}
+  .detail-table th, .detail-table td {{ padding:3px 3px; }}
+  .d-wh-num {{ font-size:.74rem; }}
+  .d-time {{ min-width:32px; }}
+  .d-wh-cell {{ min-width:36px; }}
+  .d-wp {{ min-width:24px; }}
+  .d-dir {{ min-width:24px; }}
+  .d-ws {{ min-width:44px; }}
 }}
 
 /* Footer */
