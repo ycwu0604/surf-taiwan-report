@@ -299,9 +299,9 @@ def surf_rating(wh: float, wp: float, ws_kt: float) -> str:
     if wh >= 3.0 and ws_kt >= 15:
         return "🚫 大浪+強風"
     if wh >= 3.0:
-        return "🔴⚠️ 大浪(3m+)"
+        return "🔴⚠️ 大浪"
     if ws_kt >= 15:
-        return "🟠⚠️ 風太大(15kt+)"
+        return "🟠⚠️ 強風"
     # Normal ratings
     if wh < 0.4:
         return "🔵 太平"
@@ -334,9 +334,9 @@ def generate_report() -> str:
         if rating.startswith("🔵"):
             return 350  # 太平 — flat
         if rating.startswith("🟠⚠"):
-            return 400  # 風太大 — has waves but too windy
+            return 400  # 強風 — has waves but too windy
         if rating.startswith("🔴⚠"):
-            return 500  # 大浪(3m+) — too big for most
+            return 500  # 大浪 — too big for most
         if rating.startswith("🚫"):
             return 900  # 暴風/大浪+強風 — dangerous
         return 800
@@ -607,7 +607,8 @@ body {{ font-family: "Noto Sans TC","Segoe UI",system-ui,sans-serif; background:
 a {{ color:var(--accent); }}
 
 .hero {{ text-align:center; padding:24px 0 16px; }}
-.hero h1 {{ font-size:clamp(1.8rem,5vw,2.6rem); font-weight:700; background:linear-gradient(120deg,#fff 30%,var(--accent) 80%); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }}
+.hero-logo {{ width:64px; height:64px; border-radius:50%; object-fit:cover; border:2px solid var(--border); vertical-align:middle; margin-right:8px; }}
+.hero h1 {{ font-size:clamp(1.8rem,5vw,2.6rem); font-weight:700; background:linear-gradient(120deg,#fff 30%,var(--accent) 80%); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; display:inline; vertical-align:middle; }}
 .hero .sub {{ color:var(--dim); font-size:.9rem; margin-top:4px; }}
 .hero .meta {{ color:var(--dim); font-size:.75rem; margin-top:8px; }}
 
@@ -697,7 +698,7 @@ a {{ color:var(--accent); }}
 <body>
 
 <div class="hero">
-  <h1>🏄 浪點台灣</h1>
+  <h1><img class="hero-logo" src="surf_image.png" alt="浪點台灣"> 浪點台灣</h1>
   <p class="sub">台灣 15 浪點 · {escape(today_label)} · 4 日預報</p>
   <p class="meta">CWA 鄉鎮沿海 + Open-Meteo Marine · 產生時間 {escape(generated)}</p>
 </div>
