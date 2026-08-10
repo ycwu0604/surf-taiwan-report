@@ -531,7 +531,6 @@ def render_html(now, today_label, ranking, all_spots_data) -> str:
                   <td class="d-wp">{dr['wave_period']}s</td>
                   <td class="d-dir">{escape(dr['wave_dir'])}</td>
                   <td class="d-ws">{ws_str} {escape(dr['wind_dir'])}</td>
-                  <td class="d-src">{src_badge}</td>
                 </tr>"""
 
             # Compact tide info in header
@@ -558,7 +557,7 @@ def render_html(now, today_label, ranking, all_spots_data) -> str:
             </div>
             {"<div class='tide-strip'>" + tide_html + "</div>" if tide_html else ""}
             <table class="detail-table">
-              <thead><tr><th>時刻</th><th>浪高</th><th>週期</th><th>浪向</th><th>風速·風向</th><th>來源</th></tr></thead>
+              <thead><tr><th>時刻</th><th>浪高</th><th>週期</th><th>浪向</th><th>風速·風向</th></tr></thead>
               <tbody>{detail_rows}</tbody>
             </table>
           </div>"""
@@ -675,9 +674,6 @@ a {{ color:var(--accent); }}
 .d-wp {{ font-variant-numeric:tabular-nums; min-width:36px; }}
 .d-dir {{ min-width:36px; }}
 .d-ws {{ min-width:60px; }}
-.d-src {{ font-size:.7rem; }}
-.src-cwa {{ background:rgba(79,195,247,.12); color:var(--accent); padding:1px 5px; border-radius:8px; }}
-.src-om {{ background:rgba(212,165,116,.12); color:var(--sand); padding:1px 5px; border-radius:8px; }}
 
 /* Responsive */
 @media(max-width:600px) {{
@@ -685,7 +681,6 @@ a {{ color:var(--accent); }}
   .rank-table th, .rank-table td {{ padding:5px 4px; }}
   .detail-table {{ font-size:.72rem; }}
   .d-ws {{ display:none; }}
-  .d-src {{ display:none; }}
 }}
 
 /* Footer */
