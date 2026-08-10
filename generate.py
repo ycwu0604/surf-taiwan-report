@@ -59,6 +59,7 @@ def fetch_json(url: str, timeout: int = 20) -> dict:
 # ─── 12 浪點定義 ───
 
 SPOTS = [
+    {"id": "jinshan",     "name": "金山中角灣",       "county": "新北", "lat": 25.22, "lon": 121.64, "off_lat": 25.20, "off_lon": 121.68, "facing": "N",  "sid": "6501700C01"},
     {"id": "songbo",      "name": "松柏港",           "county": "臺中", "lat": 24.27, "lon": 120.52, "off_lat": 24.25, "off_lon": 120.55, "facing": "W",  "sid": "6601100C01"},
     {"id": "jiangjun",    "name": "將軍漁港",         "county": "臺南", "lat": 23.18, "lon": 120.08, "off_lat": 23.15, "off_lon": 120.05, "facing": "SW", "sid": "6701600C01"},
     {"id": "yuguang",     "name": "漁光島",           "county": "臺南", "lat": 23.04, "lon": 120.17, "off_lat": 23.00, "off_lon": 120.15, "facing": "SW", "sid": "6703600C01"},
@@ -68,6 +69,8 @@ SPOTS = [
     {"id": "nanwan",      "name": "南灣",             "county": "屏東", "lat": 21.96, "lon": 120.76, "off_lat": 21.93, "off_lon": 120.72, "facing": "S",  "sid": "1001304C01"},
     {"id": "jialeshui",   "name": "佳樂水",           "county": "屏東", "lat": 21.99, "lon": 120.86, "off_lat": 21.95, "off_lon": 120.90, "facing": "SE", "sid": "1001324C01"},
     {"id": "jiupeng",     "name": "九棚",             "county": "屏東", "lat": 22.17, "lon": 120.89, "off_lat": 22.13, "off_lon": 120.92, "facing": "SE", "sid": "1001333C01"},
+    {"id": "jinzun",      "name": "金樽",             "county": "臺東", "lat": 22.97, "lon": 121.29, "off_lat": 23.00, "off_lon": 121.35, "facing": "SE", "sid": "1001404C01"},
+    {"id": "donghe",      "name": "東河",             "county": "臺東", "lat": 22.95, "lon": 121.19, "off_lat": 22.97, "off_lon": 121.25, "facing": "SE", "sid": "1001401C01"},
     {"id": "jiki",        "name": "磯崎",             "county": "花蓮", "lat": 23.72, "lon": 121.55, "off_lat": 23.70, "off_lon": 121.60, "facing": "E",  "sid": "1001506C01"},
     {"id": "beibin",      "name": "北濱",             "county": "花蓮", "lat": 23.98, "lon": 121.60, "off_lat": 24.00, "off_lon": 121.65, "facing": "E",  "sid": "1001501C01"},
     {"id": "wushi",       "name": "烏石港",           "county": "宜蘭", "lat": 24.86, "lon": 121.83, "off_lat": 24.88, "off_lon": 121.90, "facing": "NE", "sid": "1000204C01"},
@@ -524,8 +527,7 @@ def render_html(now, today_label, ranking, all_spots_data) -> str:
                 detail_rows += f"""
                 <tr>
                   <td class="d-time">{escape(dr['time'])}</td>
-                  <td class="d-wh"><div class="wh-bar {wh_class}" style="width:{wh_pct}%"></div></td>
-                  <td class="d-wh-num {wh_class}">{dr['wave_height']}m</td>
+                  <td class="d-wh-cell"><div class="wh-mini {wh_class}"></div><span class="d-wh-num">{dr['wave_height']}m</span></td>
                   <td class="d-wp">{dr['wave_period']}s</td>
                   <td class="d-dir">{escape(dr['wave_dir'])}</td>
                   <td class="d-ws">{ws_str} {escape(dr['wind_dir'])}</td>
@@ -556,20 +558,26 @@ def render_html(now, today_label, ranking, all_spots_data) -> str:
             </div>
             {"<div class='tide-strip'>" + tide_html + "</div>" if tide_html else ""}
             <table class="detail-table">
-              <thead><tr><th>時刻</th><th colspan="2">浪高</th><th>週期</th><th>浪向</th><th>風速·風向</th><th>來源</th></tr></thead>
+              <thead><tr><th>時刻</th><th>浪高</th><th>週期</th><th>浪向</th><th>風速·風向</th><th>來源</th></tr></thead>
               <tbody>{detail_rows}</tbody>
             </table>
           </div>"""
 
         spot_cards += f"""
       <div class="spot-card" id="{spot['id']}">
-        <div class="spot-head">
+        <div class="spot-head" onclick="toggleSpot('{spot['id']}')" role="button" tabindex="0">
           <h2 class="spot-name">{escape(spot['name'])}</h2>
           <span class="spot-badge">{escape(spot['facing'])}</span>
           <span class="spot-county">{escape(spot['county'])}</span>
+          <span class="spot-toggle" id="toggle-{spot['id']}">▶</span>
         </div>
-        {best_info}
-        <div class="spot-forecast">{day_tables}</div>
+        <div class="spot-summary-row">
+          {best_info}
+          <span class="spot-today-wh">{fc[0]['summary']['wave_height_max']}m</span>
+          <span class="spot-today-ws">{fc[0]['summary']['wind_speed_max_kt']:.0f}kt</span>
+          <span class="spot-today-rating">{fc[0]['rating']}</span>
+        </div>
+        <div class="spot-forecast" id="fc-{spot['id']}">{day_tables}</div>
       </div>"""
 
     return f"""<!DOCTYPE html>
@@ -578,6 +586,14 @@ def render_html(now, today_label, ranking, all_spots_data) -> str:
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>浪點台灣 · {escape(today_label)}</title>
+<!-- Google Analytics 4 -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-CDBNGQ04BY"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){{dataLayer.push(arguments);}}
+  gtag('js', new Date());
+  gtag('config', 'G-CDBNGQ04BY');
+</script>
 <style>
 :root {{
   --bg: #0a1628; --card: #12263a; --card2: #1a3350;
@@ -610,12 +626,21 @@ a {{ color:var(--accent); }}
 .rank-rating {{ white-space:nowrap; }}
 
 /* Spot cards */
-.spot-card {{ background:var(--card); border-radius:var(--radius); padding:16px; margin:16px 0; border:1px solid var(--border); }}
-.spot-head {{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }}
+.spot-card {{ background:var(--card); border-radius:var(--radius); margin:8px 0; border:1px solid var(--border); overflow:hidden; }}
+.spot-head {{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:14px 16px; cursor:pointer; user-select:none; }}
+.spot-head:hover {{ background:rgba(79,195,247,.04); }}
 .spot-name {{ font-size:1.35rem; font-weight:700; }}
 .spot-badge {{ background:rgba(79,195,247,.15); color:var(--accent); padding:2px 8px; border-radius:12px; font-size:.75rem; font-weight:600; }}
 .spot-county {{ color:var(--dim); font-size:.85rem; }}
-.spot-best {{ display:block; color:var(--sand); font-size:.85rem; margin:4px 0 10px; }}
+.spot-toggle {{ margin-left:auto; color:var(--dim); font-size:.8rem; transition:transform .2s; }}
+.spot-toggle.open {{ transform:rotate(90deg); }}
+.spot-summary-row {{ display:flex; align-items:center; gap:12px; padding:0 16px 12px; flex-wrap:wrap; }}
+.spot-best {{ color:var(--sand); font-size:.85rem; }}
+.spot-today-wh {{ font-weight:800; font-size:1.1rem; color:#fff; }}
+.spot-today-ws {{ color:var(--dim); font-size:.85rem; }}
+.spot-today-rating {{ font-weight:600; }}
+.spot-forecast {{ display:none; padding:0 12px 12px; }}
+.spot-forecast.open {{ display:block; }}
 
 /* Day block */
 .day-block {{ margin:10px 0; background:var(--card2); border-radius:6px; padding:10px 12px; }}
@@ -638,15 +663,14 @@ a {{ color:var(--accent); }}
 .detail-table th {{ color:var(--dim); text-align:left; padding:4px 6px; font-weight:400; border-bottom:1px solid rgba(255,255,255,.08); }}
 .detail-table td {{ padding:4px 6px; border-bottom:1px solid rgba(255,255,255,.04); }}
 .d-time {{ color:var(--dim); font-variant-numeric:tabular-nums; min-width:44px; }}
-.d-wh {{ width:80px; height:10px; background:rgba(255,255,255,.04); border-radius:3px; }}
-.wh-bar {{ height:100%; border-radius:4px; min-width:4px; }}
-.wh-c1 {{ background:linear-gradient(90deg,var(--wave1),var(--wave2)); }}
-.wh-c2 {{ background:linear-gradient(90deg,var(--wave2),var(--wave3)); }}
-.wh-c3 {{ background:linear-gradient(90deg,var(--wave3),var(--wave4)); }}
-.wh-c4 {{ background:linear-gradient(90deg,#ff4081,#d50000); }}
-.wh-c0 {{ background:rgba(255,255,255,.08); }}
-.d-wh {{ width:90px; height:14px; background:rgba(255,255,255,.04); border-radius:4px; }}
-.d-wh-num {{ font-weight:800; font-size:1.05rem; font-variant-numeric:tabular-nums; min-width:52px; color:#fff; text-shadow:0 0 6px rgba(0,0,0,.6); }}
+.d-wh-cell {{ display:flex; align-items:center; gap:4px; min-width:52px; }}
+.wh-mini {{ width:3px; height:16px; border-radius:2px; flex-shrink:0; }}
+.wh-mini.wh-c1 {{ background:linear-gradient(180deg,var(--wave1),var(--wave2)); }}
+.wh-mini.wh-c2 {{ background:linear-gradient(180deg,var(--wave2),var(--wave3)); }}
+.wh-mini.wh-c3 {{ background:linear-gradient(180deg,var(--wave3),var(--wave4)); }}
+.wh-mini.wh-c4 {{ background:linear-gradient(180deg,#ff4081,#d50000); }}
+.wh-mini.wh-c0 {{ background:rgba(255,255,255,.15); }}
+.d-wh-num {{ font-weight:800; font-size:.92rem; font-variant-numeric:tabular-nums; color:#fff; text-shadow:0 0 6px rgba(0,0,0,.6); }}
 
 .d-wp {{ font-variant-numeric:tabular-nums; min-width:36px; }}
 .d-dir {{ min-width:36px; }}
@@ -672,7 +696,7 @@ a {{ color:var(--accent); }}
 
 <div class="hero">
   <h1>🏄 浪點台灣</h1>
-  <p class="sub">台灣 12 浪點 · {escape(today_label)} · 4 日預報</p>
+  <p class="sub">台灣 15 浪點 · {escape(today_label)} · 4 日預報</p>
   <p class="meta">CWA 鄉鎮沿海 + Open-Meteo Marine · 產生時間 {escape(generated)}</p>
 </div>
 
@@ -690,6 +714,29 @@ a {{ color:var(--accent); }}
   浪點台灣 Surf Taiwan · 資料來源：CWA 鄉鎮沿海預報 + Open-Meteo Marine API<br>
   風速 1 m/s ≈ 1.94 節（kt）· 浪高為有效波高（Significant Wave Height）
 </div>
+
+<script>
+function toggleSpot(id) {{
+  var fc = document.getElementById('fc-' + id);
+  var tg = document.getElementById('toggle-' + id);
+  if (fc.classList.contains('open')) {{
+    fc.classList.remove('open');
+    tg.classList.remove('open');
+  }} else {{
+    fc.classList.add('open');
+    tg.classList.add('open');
+  }}
+}}
+// Allow keyboard enter/space to toggle
+document.querySelectorAll('.spot-head').forEach(function(el) {{
+  el.addEventListener('keydown', function(e) {{
+    if (e.key === 'Enter' || e.key === ' ') {{
+      e.preventDefault();
+      el.click();
+    }}
+  }});
+}});
+</script>
 
 </body>
 </html>"""
