@@ -5,12 +5,14 @@
 """
 
 import json
+import math
 import os
 import platform
 import re
 import shutil
 import subprocess
 import urllib.request
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from html import escape
 
@@ -62,6 +64,7 @@ SPOTS = [
     {"id": "jinshan",     "name": "金山中角灣",       "county": "新北", "lat": 25.22, "lon": 121.64, "off_lat": 25.20, "off_lon": 121.68, "facing": "N",  "sid": "6501700C01"},
     {"id": "songbo",      "name": "松柏港",           "county": "臺中", "lat": 24.27, "lon": 120.52, "off_lat": 24.25, "off_lon": 120.55, "facing": "W",  "sid": "6601100C01"},
     {"id": "jiangjun",    "name": "將軍漁港",         "county": "臺南", "lat": 23.18, "lon": 120.08, "off_lat": 23.15, "off_lon": 120.05, "facing": "SW", "sid": "6701600C01"},
+    {"id": "mashagou",    "name": "馬沙溝",           "county": "臺南", "lat": 23.18, "lon": 120.08, "off_lat": 23.15, "off_lon": 120.05, "facing": "W",  "sid": "6701600C01"},
     {"id": "yuguang",     "name": "漁光島",           "county": "臺南", "lat": 23.04, "lon": 120.17, "off_lat": 23.00, "off_lon": 120.15, "facing": "SW", "sid": "6703600C01"},
     {"id": "yongxin",     "name": "永新漁港鑽石沙灘", "county": "高雄", "lat": 22.87, "lon": 120.37, "off_lat": 22.85, "off_lon": 120.35, "facing": "SW", "sid": "6402800C01"},
     {"id": "qijin",       "name": "旗津",             "county": "高雄", "lat": 22.61, "lon": 120.27, "off_lat": 22.58, "off_lon": 120.25, "facing": "SW", "sid": "6401000C01"},
@@ -112,6 +115,17 @@ def _extract_cs_ms(cell_html: str) -> float:
     except (ValueError, TypeError):
         return 0.0
 
+def _extract_weather(cell_html: str) -> str:
+    """Extract weather description from CWA cell.
+    Cell structure: <img src="...svg" title="多雲時陰" alt="多雲時陰" />
+    Falls back to stripped text if no <img>.
+    """
+    m = re.search(r'title="([^"]+)"', cell_html)
+    if m:
+        return m.group(1).strip()
+    stripped = re.sub(r"<[^>]+>", "", cell_html).strip()
+    return stripped
+
 def parse_cwa_3hr(html: str) -> list[dict]:
     rows = re.split(r"<tr[^>]*>", html, flags=re.IGNORECASE)[1:]
     results = []
@@ -141,7 +155,8 @@ def parse_cwa_3hr(html: str) -> list[dict]:
         wave_period_str = cells[offset + 6]  # NUMBER (6.7, 7.2 etc)
         current_str = cells[offset + 7]  # May have CS span
         current_dir = cells[offset + 8]
-        weather_str = cells[offset + 9] if (offset + 9) < len(cells) else ""
+        weather_html = td_matches[offset + 9] if (offset + 9) < len(td_matches) else ""
+        weather_str = _extract_weather(weather_html)
 
         # Convert date
         yr = datetime.now(TZ).year
@@ -282,6 +297,10 @@ def day_summary(cwa_rows: list[dict], om_rows: list[dict]) -> dict:
     om_dirs = [r["wave_direction"] for r in om_rows if r.get("wave_direction") is not None]
     om_dir = om_dirs[len(om_dirs)//2] if om_dirs else None
 
+    # Representative weather: most common non-empty CWA weather string for the day
+    weathers = [r.get("weather", "") for r in cwa_rows if r.get("weather")]
+    weather = Counter(weathers).most_common(1)[0][0] if weathers else ""
+
     return {
         "wave_height_max": round(max_wh, 1),
         "wave_period_avg": round(avg_wp, 1),
@@ -289,20 +308,104 @@ def day_summary(cwa_rows: list[dict], om_rows: list[dict]) -> dict:
         "wind_speed_max_kt": round(max_ws * 1.944, 0),  # m/s → knots
         "wave_dir": wdir,
         "wave_dir_deg": om_dir,
+        "weather": weather,
     }
 
+# ─── Facing score (wave direction vs. spot facing) ───
+
+# CWA wave_dir text → degrees (compass bearing the wave is COMING FROM).
+# 0° = north, 90° = east, 180° = south, 270° = west.
+CWA_WAVE_DIR_DEG = {
+    "北": 0, "偏北": 0, "北北東": 22.5, "東北": 45, "偏東北": 45,
+    "東北東": 67.5, "東": 90, "偏東": 90, "東南東": 112.5,
+    "東南": 135, "偏東南": 135, "南南東": 157.5,
+    "南": 180, "偏南": 180, "南南西": 202.5, "西南": 225, "偏西南": 225,
+    "西南西": 247.5, "西": 270, "偏西": 270, "西北西": 292.5,
+    "西北": 315, "偏西北": 315, "北北西": 337.5,
+}
+
+# Spot facing (string) → degrees (the direction the spot looks out to sea).
+SPOT_FACING_DEG = {
+    "N": 0, "NE": 45, "E": 90, "SE": 135,
+    "S": 180, "SW": 225, "W": 270, "NW": 315,
+}
+
+def facing_coef(spot_facing: str, wave_dir_text: str) -> float:
+    """Multiplier for wave height based on wave direction vs. spot facing.
+
+    Geometry: 浪向與 facing 方位差 (compass azimuth) 越小越有利。
+    Anchors: diff=0°  → 1.0, diff=45° → 0.85, diff≥90° → 0.5 (flat floor).
+    Piecewise linear between anchors.
+    Returns 1.0 (neutral) when wave direction is unknown.
+    """
+    facing_deg = SPOT_FACING_DEG.get(spot_facing)
+    wave_deg = CWA_WAVE_DIR_DEG.get(wave_dir_text)
+    if facing_deg is None or wave_deg is None:
+        return 1.0  # unknown — don't penalize
+    diff = abs(wave_deg - facing_deg)
+    if diff > 180:
+        diff = 360 - diff
+    if diff >= 90:
+        return 0.5
+    if diff <= 45:
+        # 0° → 1.0, 45° → 0.85
+        return 1.0 - 0.15 * (diff / 45.0)
+    # 45° → 0.85, 90° → 0.5
+    return 0.85 - 0.35 * ((diff - 45) / 45.0)
+
+# ─── Wave-period coefficient (bilinear interp from user-provided lookup) ───
+# Row format: (wp, coef@0.6m, coef@1m, coef@2m, coef@3m)
+# wp < 6 → coef = 1.0 (raw wh). wh < 0.6 → coef = 1.0 (raw wh).
+# wh ≥ 3 → use coef@3m column. wp > 16 / wp < 6 → clamp to nearest endpoint.
+WAVE_COEF_TABLE = [
+    (6,  1.050, 1.267, 1.083, 1.011),
+    (8,  1.150, 1.400, 1.217, 1.133),
+    (10, 1.250, 1.533, 1.333, 1.233),
+    (12, 1.350, 1.667, 1.433, 1.333),
+    (14, 1.450, 1.767, 1.533, 1.411),
+    (16, 1.550, 1.867, 1.617, 1.522),
+]
+WH_ANCHORS = [0.6, 1.0, 2.0, 3.0]
+
+def _wave_coef(wh: float, wp: float) -> float:
+    """Period-based coefficient for wave height (bilinear interp over user table).
+    Returns 1.0 when wh < 0.6 or wp < 6 (no weighting — use raw wh).
+    """
+    if not wp or wp < 6 or not wh or wh < 0.6:
+        return 1.0
+    # Clamp wh to [0.6, 3.0] — beyond 3m we always use the coef@3m column.
+    wh_c = min(3.0, max(0.6, wh))
+    # Step 1: pick wp_low / wp_high
+    wps = [row[0] for row in WAVE_COEF_TABLE]
+    if wp >= wps[-1]:
+        wp_lo_i = wp_hi_i = len(wps) - 1
+        t_wp = 0.0
+    elif wp <= wps[0]:
+        wp_lo_i = wp_hi_i = 0
+        t_wp = 0.0
+    else:
+        wp_lo_i = max(i for i, v in enumerate(wps) if v <= wp)
+        wp_hi_i = wp_lo_i + 1
+        t_wp = (wp - wps[wp_lo_i]) / (wps[wp_hi_i] - wps[wp_lo_i])
+    # Step 2: for each wp row, interp wh axis
+    def _interp_wh(row):
+        if wh_c <= WH_ANCHORS[0]:
+            return row[1]
+        if wh_c >= WH_ANCHORS[-1]:
+            return row[-1]
+        wh_lo_i = max(i for i, v in enumerate(WH_ANCHORS) if v <= wh_c)
+        wh_hi_i = wh_lo_i + 1
+        t_wh = (wh_c - WH_ANCHORS[wh_lo_i]) / (WH_ANCHORS[wh_hi_i] - WH_ANCHORS[wh_lo_i])
+        return row[wh_lo_i + 1] + t_wh * (row[wh_hi_i + 1] - row[wh_lo_i + 1])
+    coef_lo = _interp_wh(WAVE_COEF_TABLE[wp_lo_i])
+    coef_hi = _interp_wh(WAVE_COEF_TABLE[wp_hi_i])
+    return coef_lo + t_wp * (coef_hi - coef_lo)
+
 def surf_rating(wh: float, wp: float, ws_kt: float) -> str:
-    """Return rating emoji + label. Wind >15kt or wave >3m = not suitable."""
-    # Hard blocks first
-    if ws_kt >= 20:
-        return "🚫 暴風"
-    if wh >= 3.0 and ws_kt >= 15:
-        return "🚫 大浪+強風"
-    if wh >= 3.0:
-        return "🔴⚠️ 大浪"
-    if ws_kt >= 15:
-        return "🟠⚠️ 強風"
-    # Normal ratings
+    """Return rating emoji + label. `wh` should be the period-weighted eff_wh.
+    Hard safety blocks (🚫 暴風, 🚫 巨浪, 🟠⚠️ 強風) are handled by the caller
+    using raw wh / ws_kt — period can't make a safe wave unsafe.
+    """
     if wh < 0.4:
         return "🔵 太平"
     elif wh < 0.9:
@@ -311,8 +414,11 @@ def surf_rating(wh: float, wp: float, ws_kt: float) -> str:
         return "🟡 中級"
     elif wh < 2.5:
         return "🟠 進階"
-    else:
-        return "🔴 大浪"
+    elif wh < 3.0:
+        return "🔴 高階"
+    # eff >= 3.0 with raw wh < 3.0: long-period wave on borderline raw height.
+    # Fall back to 🔴 高階 since raw wh is under the 巨浪 safety threshold.
+    return "🔴 高階"
 
 # ─── Generate report ───
 
@@ -323,6 +429,8 @@ def generate_report() -> str:
 
     def _rating_rank(rating: str) -> int:
         """Lower = more surfable. Sort real-wave spots first, unsafe last."""
+        if rating.startswith("🔴高階") or rating == "🔴 高階":
+            return 50   # 高階 — above 進階 (the biggest surfable)
         if rating.startswith("🟠") and "⚠" not in rating:
             return 100  # 進階 — best (real waves, manageable)
         if rating.startswith("🟡"):
@@ -335,10 +443,8 @@ def generate_report() -> str:
             return 350  # 太平 — flat
         if rating.startswith("🟠⚠"):
             return 400  # 強風 — has waves but too windy
-        if rating.startswith("🔴⚠"):
-            return 500  # 大浪 — too big for most
         if rating.startswith("🚫"):
-            return 900  # 暴風/大浪+強風 — dangerous
+            return 900  # 暴風 / 巨浪 — dangerous
         return 800
 
     all_spots_data = []
@@ -372,7 +478,26 @@ def generate_report() -> str:
             om = om_days.get(ymd, [])
             tide = tide_by_date.get(ymd, [])
             summ = day_summary(cwa, om)
-            rating = surf_rating(summ["wave_height_max"], summ["wave_period_avg"], summ["wind_speed_max_kt"])
+            # Facing coefficient: penalizes offshore / along-shore wave directions.
+            f_coef = facing_coef(spot["facing"], summ["wave_dir"])
+            # Period-weighted effective wh + facing multiplier for normal-rating branches.
+            # Hard blocks (🚫 暴風, 🚫 巨浪, 🟠⚠️ 強風) use raw wh via separate check below.
+            raw_wh = summ["wave_height_max"]
+            wh_for_rating = raw_wh * _wave_coef(raw_wh, summ["wave_period_avg"]) * f_coef
+            # Safety thresholds based on raw wh — period can't make a safe wave unsafe.
+            if summ["wind_speed_max_kt"] >= 20:
+                rating = "🚫 暴風"
+            elif raw_wh >= 3.0:
+                rating = "🚫 巨浪"
+            elif summ["wind_speed_max_kt"] >= 15:
+                rating = "🟠⚠️ 強風"
+            else:
+                rating = surf_rating(
+                    wh_for_rating,
+                    summ["wave_period_avg"],
+                    summ["wind_speed_max_kt"],
+                )
+            summ["facing_coef"] = f_coef
 
             # 3-hourly detail rows (use CWA if available, else sample OM)
             detail = []
@@ -385,6 +510,7 @@ def generate_report() -> str:
                         "wave_dir": r["wave_dir"],
                         "wind_speed_kt": round(r["wind_speed"] * 1.944, 0),
                         "wind_dir": r["wind_dir"],
+                        "weather": r.get("weather", ""),
                         "source": "CWA",
                     })
             elif om:
@@ -426,42 +552,49 @@ def generate_report() -> str:
             "best_day": best_day,
         })
 
-    # ─── Build ranking ───
+    # ─── Build ranking: one card per day (today / tomorrow / day after) ───
+    # Each day ranks all 15 spots for THAT day's conditions.
     # Sort: best rating rank first, then highest wave height, then lowest wind
     # Filter out unsurfable spots (🔴⚠️ 大浪3m+ / 🚫 暴風), take up to 10
     # If ALL spots are unsurfable, still show them so the list isn't empty
 
-    all_rankings = []
-    for sd in all_spots_data:
-        if sd["best_day"]:
-            rating = sd["best_day"]["rating"]
-            all_rankings.append({
+    def _build_day_ranking(spot_data_list, day_idx: int) -> list[dict]:
+        rows = []
+        for sd in spot_data_list:
+            if day_idx >= len(sd["forecast"]):
+                continue
+            day = sd["forecast"][day_idx]
+            summ = day["summary"]
+            rating = day["rating"]
+            rows.append({
                 "name": sd["spot"]["name"],
                 "county": sd["spot"]["county"],
                 "facing": sd["spot"]["facing"],
-                "best_date": sd["best_day"]["short"],
-                "best_weekday": sd["best_day"]["weekday"],
-                "wave_height": sd["best_day"]["summary"]["wave_height_max"],
-                "wave_period": sd["best_day"]["summary"]["wave_period_avg"],
-                "wind_kt": int(sd["best_day"]["summary"]["wind_speed_max_kt"]),
+                "wave_height": summ["wave_height_max"],
+                "wave_period": summ["wave_period_avg"],
+                "wind_kt": int(summ["wind_speed_max_kt"]),
                 "rating": rating,
                 "_rank": _rating_rank(rating),
             })
+        rows.sort(key=lambda r: (r["_rank"], -r["wave_height"], r["wind_kt"]))
+        surfable = [r for r in rows if r["_rank"] < 500]  # exclude 🔴⚠️(500) and 🚫(900)
+        source = surfable if surfable else rows
+        return [{k: v for k, v in r.items() if k != "_rank"} for r in source[:10]]
 
-    # Sort: best rating rank first, then highest wave height, then lowest wind
-    all_rankings.sort(key=lambda r: (r["_rank"], -r["wave_height"], r["wind_kt"]))
-
-    # Filter out unsurfable spots (暴風 / 大浪3m+), take up to 10
-    # If ALL spots are unsurfable, still show them so the list isn't empty
-    surfable = [r for r in all_rankings if r["_rank"] < 500]  # exclude 🔴⚠️(500) and 🚫(900)
-    ranking_source = surfable if surfable else all_rankings
-
-    ranking = []
-    for r in ranking_source[:10]:
-        ranking.append({k: v for k, v in r.items() if k != "_rank"})
+    # Build 3 daily rankings (today / tomorrow / day after)
+    daily_rankings: list[dict] = []
+    for i in range(3):
+        d = now + timedelta(days=i)
+        rows = _build_day_ranking(all_spots_data, i)
+        daily_rankings.append({
+            "label": f"{d.month}/{d.day}",
+            "weekday": WEEKDAY_TW[d.weekday()],
+            "is_today": i == 0,
+            "rows": rows,
+        })
 
     # ─── Render HTML ───
-    html = render_html(now, today_label, ranking, all_spots_data)
+    html = render_html(now, today_label, daily_rankings, all_spots_data)
     return html
 
 
@@ -476,23 +609,42 @@ def deg_to_compass(deg) -> str:
     return dirs[round(d / 45) % 8]
 
 
-def render_html(now, today_label, ranking, all_spots_data) -> str:
+def render_html(now, today_label, daily_rankings, all_spots_data) -> str:
     generated = now.strftime("%Y-%m-%d %H:%M")
 
-    ranking_rows = ""
-    for i, r in enumerate(ranking, 1):
-        star = "⭐" if i <= 3 else ""
-        ranking_rows += f"""
+    # Build 3 carousel cards (today / tomorrow / day after)
+    ranking_cards = ""
+    for idx, day in enumerate(daily_rankings):
+        ranking_rows = ""
+        for i, r in enumerate(day["rows"], 1):
+            star = "⭐" if i <= 3 else ""
+            ranking_rows += f"""
         <tr class="rank-row rank-{i}">
           <td class="rank-num">{star}{i}</td>
           <td class="rank-name">{escape(r['name'])}<span class="rank-county">{escape(r['county'])}</span></td>
           <td class="rank-facing">{escape(r['facing'])}</td>
-          <td class="rank-date">{escape(r['best_date'])} {escape(r['best_weekday'])}</td>
           <td class="rank-wh">{r['wave_height']}m</td>
           <td class="rank-wp">{r['wave_period']}s</td>
           <td class="rank-ws">{r['wind_kt']}kt</td>
           <td class="rank-rating">{r['rating']}</td>
         </tr>"""
+
+        # Empty-state when no rows
+        if not day["rows"]:
+            ranking_rows = '<tr><td colspan="6" class="rank-empty">此日無資料</td></tr>'
+
+        date_label = "今天" if day["is_today"] else day["weekday"]
+        ranking_cards += f"""
+      <article class="rank-card" data-index="{idx}" aria-label="{escape(date_label)} {escape(day['label'])} 推薦排名">
+        <header class="rank-card-head">
+          <span class="rank-card-day">{escape(date_label)}</span>
+          <span class="rank-card-date">{escape(day['label'])} {escape(day['weekday'])}</span>
+        </header>
+        <table class="rank-table">
+          <thead><tr><th>#</th><th>浪點</th><th>面</th><th>浪高</th><th>週期</th><th>風速</th><th>評分</th></tr></thead>
+          <tbody>{ranking_rows}</tbody>
+        </table>
+      </article>"""
 
     spot_cards = ""
     for sd in all_spots_data:
@@ -524,6 +676,7 @@ def render_html(now, today_label, ranking, all_spots_data) -> str:
                 ws_str = f'{dr["wind_speed_kt"]:.0f}kt' if dr["wind_speed_kt"] is not None else "—"
                 wh_pct = min(100, max(2, (dr["wave_height"] / 4.0) * 100)) if dr["wave_height"] else 0
                 wh_class = wave_color_class(dr["wave_height"])
+                weather_cell = escape(dr.get("weather", "")) if dr.get("weather") else "—"
                 detail_rows += f"""
                 <tr>
                   <td class="d-time">{escape(dr['time'])}</td>
@@ -531,6 +684,7 @@ def render_html(now, today_label, ranking, all_spots_data) -> str:
                   <td class="d-wp">{dr['wave_period']}s</td>
                   <td class="d-dir">{escape(dr['wave_dir'])}</td>
                   <td class="d-ws"><span class="d-ws-num">{ws_str}</span> <span class="d-ws-dir">{escape(dr['wind_dir'])}</span></td>
+                  <td class="d-weather hide-mobile">{weather_cell}</td>
                 </tr>"""
 
             # Compact tide info in header
@@ -545,6 +699,11 @@ def render_html(now, today_label, ranking, all_spots_data) -> str:
             elif tide_compact:
                 tide_header = ""
 
+            # Day-header weather chip
+            weather_chip = ""
+            if summ.get("weather"):
+                weather_chip = f'<span class="day-weather">☁ {escape(summ["weather"])}</span>'
+
             day_tables += f"""
           <div class="day-block">
             <div class="day-header">
@@ -552,12 +711,13 @@ def render_html(now, today_label, ranking, all_spots_data) -> str:
               <span class="day-summary">
                 {summ['wave_height_max']}m · {summ['wave_period_avg']}s · {summ['wind_speed_max_kt']:.0f}kt · {escape(summ['wave_dir'])}
               </span>
+              {weather_chip}
               {tide_header}
               <span class="day-rating">{day['rating']}</span>
             </div>
             {"<div class='tide-strip'>" + tide_html + "</div>" if tide_html else ""}
             <table class="detail-table">
-              <thead><tr><th>時刻</th><th>浪高</th><th>週期</th><th>浪向</th><th>風速·風向</th></tr></thead>
+              <thead><tr><th>時刻</th><th>浪高</th><th>週期</th><th>浪向</th><th>風速·風向</th><th class="hide-mobile">天氣</th></tr></thead>
               <tbody>{detail_rows}</tbody>
             </table>
           </div>"""
@@ -612,18 +772,81 @@ a {{ color:var(--accent); }}
 .hero .sub {{ color:var(--dim); font-size:.9rem; margin-top:4px; }}
 .hero .meta {{ color:var(--dim); font-size:.75rem; margin-top:8px; }}
 
-/* Ranking */
+/* Ranking carousel */
 .ranking {{ margin:20px 0; }}
 .ranking h2 {{ font-size:1.2rem; margin-bottom:10px; }}
+.rank-carousel {{ position:relative; }}
+.rank-track {{
+  display:flex;
+  overflow-x:auto;
+  scroll-snap-type:x mandatory;
+  scroll-behavior:smooth;
+  -webkit-overflow-scrolling:touch;
+  scrollbar-width:none;
+}}
+.rank-track::-webkit-scrollbar {{ display:none; }}
+.rank-card {{
+  flex:0 0 100%;
+  scroll-snap-align:start;
+  scroll-snap-stop:always;
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  padding:14px 16px;
+  box-sizing:border-box;
+}}
+.rank-card-head {{
+  display:flex;
+  align-items:baseline;
+  gap:10px;
+  margin-bottom:10px;
+  padding-bottom:8px;
+  border-bottom:1px solid var(--border);
+}}
+.rank-card-day {{ font-size:1.15rem; font-weight:700; color:var(--accent); }}
+.rank-card-date {{ color:var(--dim); font-size:.85rem; }}
 .rank-table {{ width:100%; border-collapse:collapse; font-size:.82rem; }}
 .rank-table th {{ text-align:left; color:var(--dim); padding:6px 8px; border-bottom:1px solid var(--border); font-weight:400; letter-spacing:.04em; }}
 .rank-table td {{ padding:8px; border-bottom:1px solid rgba(255,255,255,.05); }}
+.rank-empty {{ text-align:center; color:var(--dim); padding:20px; }}
 .rank-num {{ font-weight:700; min-width:32px; }}
 .rank-name {{ font-weight:600; }}
 .rank-county {{ color:var(--dim); font-weight:400; margin-left:6px; font-size:.78rem; }}
 .rank-1 .rank-num, .rank-2 .rank-num, .rank-3 .rank-num {{ color:var(--sand); }}
 .rank-wh {{ font-weight:700; font-variant-numeric:tabular-nums; }}
 .rank-rating {{ white-space:nowrap; }}
+.rank-arrow {{
+  position:absolute;
+  top:50%;
+  transform:translateY(-50%);
+  width:36px; height:36px;
+  border-radius:50%;
+  border:1px solid var(--border);
+  background:rgba(10,22,40,.7);
+  color:var(--accent);
+  font-size:1.4rem;
+  line-height:1;
+  cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+  z-index:2;
+  user-select:none;
+}}
+.rank-arrow:hover {{ background:rgba(79,195,247,.15); }}
+.rank-arrow-prev {{ left:6px; }}
+.rank-arrow-next {{ right:6px; }}
+.rank-arrow[disabled] {{ opacity:.3; cursor:default; }}
+.rank-dots {{
+  display:flex; justify-content:center; gap:8px;
+  margin-top:10px;
+}}
+.rank-dot {{
+  width:8px; height:8px; border-radius:50%;
+  border:0;
+  background:rgba(255,255,255,.2);
+  cursor:pointer;
+  padding:0;
+}}
+.rank-dot.active {{ background:var(--accent); }}
 
 /* Spot cards */
 .spot-card {{ background:var(--card); border-radius:var(--radius); margin:8px 0; border:1px solid var(--border); overflow:hidden; }}
@@ -647,6 +870,7 @@ a {{ color:var(--accent); }}
 .day-header {{ display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }}
 .day-date {{ font-weight:700; font-size:.95rem; min-width:80px; }}
 .day-summary {{ color:var(--dim); font-size:.82rem; }}
+.day-weather {{ background:rgba(79,195,247,.12); color:var(--accent); padding:2px 8px; border-radius:10px; font-size:.78rem; white-space:nowrap; }}
 .day-rating {{ font-size:.9rem; font-weight:600; }}
 .rating-danger {{ color:#ff4081; }}
 .rating-warn {{ color:#ff9800; }}
@@ -676,9 +900,11 @@ a {{ color:var(--accent); }}
 .d-wp {{ font-variant-numeric:tabular-nums; min-width:30px; }}
 .d-dir {{ min-width:28px; }}
 .d-ws {{ min-width:52px; }}
+.d-weather {{ color:var(--text); font-size:.78rem; min-width:60px; max-width:120px; }}
 
 /* Responsive */
 @media(max-width:600px) {{
+  .hide-mobile {{ display:none !important; }}
   .rank-table {{ font-size:.72rem; }}
   .rank-table th, .rank-table td {{ padding:5px 4px; }}
   .detail-table {{ font-size:.68rem; }}
@@ -689,6 +915,7 @@ a {{ color:var(--accent); }}
   .d-wp {{ min-width:24px; }}
   .d-dir {{ min-width:24px; }}
   .d-ws {{ min-width:44px; }}
+  .d-weather {{ font-size:.68rem; min-width:48px; }}
 }}
 
 /* Footer */
@@ -704,11 +931,15 @@ a {{ color:var(--accent); }}
 </div>
 
 <div class="ranking">
-  <h2>🏆 本週衝浪推薦</h2>
-  <table class="rank-table">
-    <thead><tr><th>#</th><th>浪點</th><th>面</th><th>最佳日</th><th>浪高</th><th>週期</th><th>風速</th><th>評分</th></tr></thead>
-    <tbody>{ranking_rows}</tbody>
-  </table>
+  <h2>🏆 三日衝浪推薦</h2>
+  <div class="rank-carousel" id="rankCarousel" tabindex="0" aria-label="三日衝浪推薦輪播">
+    <button class="rank-arrow rank-arrow-prev" id="rankPrev" aria-label="上一日" type="button">‹</button>
+    <div class="rank-track" id="rankTrack">{ranking_cards}</div>
+    <button class="rank-arrow rank-arrow-next" id="rankNext" aria-label="下一日" type="button">›</button>
+  </div>
+  <div class="rank-dots" id="rankDots" role="tablist" aria-label="選擇日期">
+    {''.join(f'<button class="rank-dot" data-go="{i}" role="tab" aria-label="第{i+1}張"></button>' for i in range(3))}
+  </div>
 </div>
 
 {spot_cards}
@@ -739,6 +970,58 @@ document.querySelectorAll('.spot-head').forEach(function(el) {{
     }}
   }});
 }});
+
+// Ranking carousel
+(function() {{
+  var track = document.getElementById('rankTrack');
+  var prev = document.getElementById('rankPrev');
+  var next = document.getElementById('rankNext');
+  var dots = document.querySelectorAll('.rank-dot');
+  var carousel = document.getElementById('rankCarousel');
+  if (!track || !dots.length) return;
+
+  function cardWidth() {{
+    var card = track.querySelector('.rank-card');
+    return card ? card.getBoundingClientRect().width : track.clientWidth;
+  }}
+
+  function currentIndex() {{
+    return Math.round(track.scrollLeft / cardWidth());
+  }}
+
+  function goTo(i, smooth) {{
+    var max = dots.length - 1;
+    i = Math.max(0, Math.min(max, i));
+    track.scrollTo({{ left: i * cardWidth(), behavior: smooth ? 'smooth' : 'auto' }});
+  }}
+
+  function syncArrows() {{
+    var i = currentIndex();
+    var max = dots.length - 1;
+    if (prev) prev.disabled = (i <= 0);
+    if (next) next.disabled = (i >= max);
+    dots.forEach(function(d, idx) {{
+      d.classList.toggle('active', idx === i);
+      d.setAttribute('aria-selected', idx === i ? 'true' : 'false');
+    }});
+  }}
+
+  if (prev) prev.addEventListener('click', function() {{ goTo(currentIndex() - 1, true); }});
+  if (next) next.addEventListener('click', function() {{ goTo(currentIndex() + 1, true); }});
+  dots.forEach(function(d, idx) {{
+    d.addEventListener('click', function() {{ goTo(idx, true); }});
+  }});
+
+  track.addEventListener('scroll', syncArrows, {{ passive: true }});
+  window.addEventListener('resize', syncArrows);
+  syncArrows();
+
+  // Keyboard arrows when carousel (or its descendants) has focus
+  carousel.addEventListener('keydown', function(e) {{
+    if (e.key === 'ArrowLeft') {{ e.preventDefault(); goTo(currentIndex() - 1, true); }}
+    else if (e.key === 'ArrowRight') {{ e.preventDefault(); goTo(currentIndex() + 1, true); }}
+  }});
+}})();
 </script>
 
 </body>
